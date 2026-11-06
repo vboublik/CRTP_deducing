@@ -3,28 +3,32 @@
 #include <tuple>
 #include <variant>
 #include <vector>
+#include <memory>
 #include <string>
 #include <chrono>
-#include <numeric>
+#include <algorithm>
+#include <random>
+#include <cstdio>
 
 // ================================================================
-// КОЛИ СТАТИЧНЕ ПРОГРАЄ ДИНАМІЧНОМУ
-// Межа проблеми виразності для CRTP-кортежних інфраструктур
+// ПРО МЕЖІ ВИРАЗНОСТІ CRTP-КОРТЕЖНИХ ІНФРАСТРУКТУР В УМОВАХ RUNTIME
 // Володимир Бублик, НаУКМА — TAAPSD 2026
 // ================================================================
+//
+// Принципи вимірювання:
+//  * однаковий обсяг роботи в усіх варіантах: кожен звіт = header+body+footer,
+//    тобто 3 записи у volatile sink на один звіт;
+//  * кожне вимірювання повторюється RUNS разів, береться медіана;
+//  * Сценарій A — склад відомий під час компіляції (3 звіти);
+//    Сценарій B — склад визначається під час виконання (N звітів
+//    у випадковому порядку); tuple+fold тут принципово не застосовний.
 
-// ----------------------------------------------------------------
-// Спільні типи звітів (без поведінки — щоб не вимірювати cout)
-// ----------------------------------------------------------------
-
-static volatile long long sink = 0; // запобігає оптимізації
+static volatile long long sink = 0; // запобігає видаленню роботи оптимізатором
 
 // ================================================================
 // 1. GoF: Шаблонний метод через virtual dispatch
 // ================================================================
-
 namespace gof {
-
     struct IReport {
         void generate() { header(); body(); footer(); }
         virtual ~IReport() = default;
@@ -33,7 +37,6 @@ namespace gof {
         virtual void body()   = 0;
         virtual void footer() = 0;
     };
-
     struct PdfReport : IReport {
     private:
         void header() override { sink += 1; }
@@ -52,15 +55,12 @@ namespace gof {
         void body()   override { sink += 8; }
         void footer() override { sink += 9; }
     };
-
 } // namespace gof
 
 // ================================================================
 // 2. CRTP: статичний поліморфізм
 // ================================================================
-
 namespace crtp {
-
     template<typename Derived>
     struct Report {
         void generate() {
@@ -69,7 +69,6 @@ namespace crtp {
             static_cast<Derived*>(this)->footer();
         }
     };
-
     struct PdfReport : Report<PdfReport> {
         void header() { sink += 1; }
         void body()   { sink += 2; }
@@ -85,15 +84,12 @@ namespace crtp {
         void body()   { sink += 8; }
         void footer() { sink += 9; }
     };
-
 } // namespace crtp
 
 // ================================================================
 // 3. Deducing this (C++23)
 // ================================================================
-
 namespace deduced {
-
     struct Report {
         void generate(this auto& self) {
             self.header();
@@ -101,7 +97,6 @@ namespace deduced {
             self.footer();
         }
     };
-
     struct PdfReport : Report {
         void header() { sink += 1; }
         void body()   { sink += 2; }
@@ -117,18 +112,31 @@ namespace deduced {
         void body()   { sink += 8; }
         void footer() { sink += 9; }
     };
-
 } // namespace deduced
 
 // ================================================================
-// 4. tuple + fold: compile-time фіксований набір
+// 4–5. Звіти без ієрархії для tuple+fold і variant+visit.
+// ТОЙ САМИЙ обсяг роботи, що й у 1–3: header+body+footer.
 // ================================================================
-
-namespace tuple_fold {
-
-    struct PdfReport  { void generate() { sink += 1; } };
-    struct HtmlReport { void generate() { sink += 4; } };
-    struct CsvReport  { void generate() { sink += 7; } };
+namespace plain {
+    struct PdfReport {
+        void generate() { header(); body(); footer(); }
+        void header() { sink += 1; }
+        void body()   { sink += 2; }
+        void footer() { sink += 3; }
+    };
+    struct HtmlReport {
+        void generate() { header(); body(); footer(); }
+        void header() { sink += 4; }
+        void body()   { sink += 5; }
+        void footer() { sink += 6; }
+    };
+    struct CsvReport {
+        void generate() { header(); body(); footer(); }
+        void header() { sink += 7; }
+        void body()   { sink += 8; }
+        void footer() { sink += 9; }
+    };
 
     template<typename... Reports>
     struct Runner {
@@ -138,124 +146,122 @@ namespace tuple_fold {
         }
     };
 
-} // namespace tuple_fold
-
-// ================================================================
-// 5. variant + visit: runtime-визначений набір
-// ================================================================
-
-namespace variant_visit {
-
-    struct PdfReport  { void generate() { sink += 1; } };
-    struct HtmlReport { void generate() { sink += 4; } };
-    struct CsvReport  { void generate() { sink += 7; } };
-
     using ReportVariant = std::variant<PdfReport, HtmlReport, CsvReport>;
-
-} // namespace variant_visit
+} // namespace plain
 
 // ================================================================
-// Бенчмарк
+// Вимірювання: RUNS прогонів по reps повторів, медіана
 // ================================================================
+constexpr int RUNS = 7;
 
 template<class F>
-double time_ms(F&& f, int reps) {
-    auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < reps; ++i) f();
-    auto t1 = std::chrono::steady_clock::now();
-    return std::chrono::duration<double, std::milli>(t1 - t0).count();
+double median_ms(F&& f, int reps) {
+    std::vector<double> t;
+    f(); // розігрів
+    for (int run = 0; run < RUNS; ++run) {
+        auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < reps; ++i) f();
+        auto t1 = std::chrono::steady_clock::now();
+        t.push_back(std::chrono::duration<double, std::milli>(t1 - t0).count());
+    }
+    std::sort(t.begin(), t.end());
+    return t[t.size() / 2];
 }
 
-int main() {
-    const int REPS = 1'000'000;
+int main(int argc, char** argv) {
+    // ------------------------------------------------------------
+    // Сценарій A: склад відомий під час компіляції (3 звіти)
+    // ------------------------------------------------------------
+    const int REPS_A = 1'000'000;
 
-    // --- 1. GoF ---
-    std::vector<gof::IReport*> gof_reports = {
-        new gof::PdfReport{},
-        new gof::HtmlReport{},
-        new gof::CsvReport{}
-    };
-    double t_gof = time_ms([&] {
-        for (auto* r : gof_reports) r->generate();
-    }, REPS);
-    for (auto* r : gof_reports) delete r;
+    std::vector<std::unique_ptr<gof::IReport>> gof_a;
+    gof_a.push_back(std::make_unique<gof::PdfReport>());
+    gof_a.push_back(std::make_unique<gof::HtmlReport>());
+    gof_a.push_back(std::make_unique<gof::CsvReport>());
+    double a_gof = median_ms([&] { for (auto& r : gof_a) r->generate(); }, REPS_A);
 
-    // --- 2. CRTP ---
-    crtp::PdfReport  crtp_pdf;
-    crtp::HtmlReport crtp_html;
-    crtp::CsvReport  crtp_csv;
-    double t_crtp = time_ms([&] {
-        crtp_pdf.generate();
-        crtp_html.generate();
-        crtp_csv.generate();
-    }, REPS);
+    crtp::PdfReport cp; crtp::HtmlReport ch; crtp::CsvReport cc;
+    double a_crtp = median_ms([&] { cp.generate(); ch.generate(); cc.generate(); }, REPS_A);
 
-    // --- 3. Deducing this ---
-    deduced::PdfReport  ded_pdf;
-    deduced::HtmlReport ded_html;
-    deduced::CsvReport  ded_csv;
-    double t_deduced = time_ms([&] {
-        ded_pdf.generate();
-        ded_html.generate();
-        ded_csv.generate();
-    }, REPS);
+    deduced::PdfReport dp; deduced::HtmlReport dh; deduced::CsvReport dc;
+    double a_ded = median_ms([&] { dp.generate(); dh.generate(); dc.generate(); }, REPS_A);
 
-    // --- 4. tuple + fold ---
-    tuple_fold::Runner<
-        tuple_fold::PdfReport,
-        tuple_fold::HtmlReport,
-        tuple_fold::CsvReport> runner;
-    double t_tuple = time_ms([&] {
-        runner.run_all();
-    }, REPS);
+    plain::Runner<plain::PdfReport, plain::HtmlReport, plain::CsvReport> runner;
+    double a_tuple = median_ms([&] { runner.run_all(); }, REPS_A);
 
-    // --- 5. variant + visit ---
-    std::vector<variant_visit::ReportVariant> vreports = {
-        variant_visit::PdfReport{},
-        variant_visit::HtmlReport{},
-        variant_visit::CsvReport{}
-    };
-    double t_variant = time_ms([&] {
-        for (auto& r : vreports)
-            std::visit([](auto& rep) { rep.generate(); }, r);
-    }, REPS);
+    std::vector<plain::ReportVariant> var_a = {
+        plain::PdfReport{}, plain::HtmlReport{}, plain::CsvReport{} };
+    double a_var = median_ms([&] {
+        for (auto& r : var_a) std::visit([](auto& rep) { rep.generate(); }, r);
+    }, REPS_A);
 
-    // --- Результати ---
-    // виводимо і в консоль, і у файл
+    // ------------------------------------------------------------
+    // Сценарій B: склад визначається під час виконання — випадок variant.
+    // Випадкові числа імітують вибір користувача (read_user_choice у тезах):
+    // компілятор не знає наперед ні типів, ні порядку звітів,
+    // тому не може прибрати диспетчеризацію.
+    // Зерно (seed) робить цей «вибір» однаковим для всіх, хто запускає тест.
+    // Запуск: main [N] [seed]
+    // ------------------------------------------------------------
+    const int N = (argc > 1) ? std::stoi(argv[1]) : 3000;
+    const unsigned seed = (argc > 2) ? static_cast<unsigned>(std::stoul(argv[2]))
+                                     : std::random_device{}();
+    const int REPS_B = std::max(1, REPS_A * 3 / N); // той самий загальний обсяг викликів
+
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> pick(0, 2);
+    std::vector<int> kinds(N);
+    for (auto& k : kinds) k = pick(rng);
+
+    std::vector<std::unique_ptr<gof::IReport>> gof_b;
+    std::vector<plain::ReportVariant> var_b;
+    gof_b.reserve(N); var_b.reserve(N);
+    for (int k : kinds) {
+        switch (k) {
+        case 0: gof_b.push_back(std::make_unique<gof::PdfReport>());  var_b.emplace_back(plain::PdfReport{});  break;
+        case 1: gof_b.push_back(std::make_unique<gof::HtmlReport>()); var_b.emplace_back(plain::HtmlReport{}); break;
+        default: gof_b.push_back(std::make_unique<gof::CsvReport>()); var_b.emplace_back(plain::CsvReport{}); break;
+        }
+    }
+    double b_gof = median_ms([&] { for (auto& r : gof_b) r->generate(); }, REPS_B);
+    double b_var = median_ms([&] {
+        for (auto& r : var_b) std::visit([](auto& rep) { rep.generate(); }, r);
+    }, REPS_B);
+
+    // ------------------------------------------------------------
+    // Результати: і в консоль, і у файл
+    // ------------------------------------------------------------
     auto print_results = [&](std::ostream& out) {
-        out << "\n=== TAAPSD 2026: dispatch benchmark ===\n";
-        out << "REPS = " << REPS << "  |  sink=" << sink << "\n\n";
+        char buf[96];
         auto row = [&](const char* label, double ms) {
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "%-32s %8.2f ms\n", label, ms);
+            std::snprintf(buf, sizeof(buf), "%-34s %8.2f ms\n", label, ms);
             out << buf;
         };
-        row("1. GoF (virtual dispatch)",  t_gof);
-        row("2. CRTP",                    t_crtp);
-        row("3. Deducing this (C++23)",   t_deduced);
-        row("4. tuple + fold",            t_tuple);
-        row("5. variant + visit",         t_variant);
-        out << "\n--- Notes ---\n"
-            << "* GoF vs CRTP (debug): virtual dispatch ~2x slower\n"
-            << "  -- each call goes through a vtable pointer (indirect jump).\n"
-            << "* GoF vs CRTP (release): gap disappears\n"
-            << "  -- compiler devirtualizes when the concrete type is statically known.\n"
-            << "* variant+visit (debug vs release): most dramatic result (~22x)\n"
-            << "  -- debug: each visit = indexed jump through dispatch table;\n"
-            << "  -- release: compiler sees a closed type set and inlines everything.\n"
-            << "* tuple+fold: consistently fast -- type set fixed at compile time,\n"
-            << "  fold expression expands into a sequence of direct calls.\n"
-            << "* Conclusion: the static/dynamic boundary is a question of\n"
-            << "  expressiveness (what can be described), not just performance.\n";
+        out << "\n=== TAAPSD 2026: dispatch benchmark ===\n";
+        out << "median of " << RUNS << " runs; every report = header+body+footer\n";
+
+        out << "\nScenario A: composition fixed at compile time (3 reports x "
+            << REPS_A << " reps)\n";
+        row("1. GoF (virtual dispatch)", a_gof);
+        row("2. CRTP", a_crtp);
+        row("3. Deducing this (C++23)", a_ded);
+        row("4. tuple + fold", a_tuple);
+        row("5. variant + visit", a_var);
+
+        out << "\nScenario B: composition determined at runtime (N=" << N
+            << " random reports x " << REPS_B << " reps, seed=" << seed << ")\n";
+        row("1. GoF (virtual dispatch)", b_gof);
+        out << "2-4. CRTP / deducing this / tuple   not expressible\n";
+        row("5. variant + visit", b_var);
+
+        out << "\n(sink=" << sink << ")\n";
     };
 
     print_results(std::cout);
-
     std::ofstream fout("benchmark_results.txt");
     if (fout) {
         print_results(fout);
-        std::cout << "\n=> results saved to benchmark_results.txt\n";
+        std::cout << "=> results saved to benchmark_results.txt\n";
     }
-
     return 0;
 }
