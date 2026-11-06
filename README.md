@@ -26,3 +26,4 @@ are very welcome: please use **Discussions** or open an **Issue**.
 ## License
 
 MIT
+| `ep_demo/` | Expression Problem demo: separate compilation shows which extensions need recompiling old code (virtual vs variant) |
