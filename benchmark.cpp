@@ -9,9 +9,11 @@
 #include <algorithm>
 #include <random>
 #include <cstdio>
+#include <functional>
 
 // ================================================================
-// ПРО МЕЖІ ВИРАЗНОСТІ CRTP-КОРТЕЖНИХ ІНФРАСТРУКТУР В УМОВАХ RUNTIME
+// КОЛИ СТАТИЧНЕ ПРОГРАЄ ДИНАМІЧНОМУ
+// Межа проблеми виразності для CRTP-кортежних інфраструктур
 // Володимир Бублик, НаУКМА — TAAPSD 2026
 // ================================================================
 //
@@ -149,6 +151,45 @@ namespace plain {
     using ReportVariant = std::variant<PdfReport, HtmlReport, CsvReport>;
 } // namespace plain
 
+
+// ================================================================
+// 6. Type erasure (Parent, GoingNative 2013): відкритий набір типів
+//    без спільного базового класу. Статика на вході (концепт Report),
+//    динаміка всередині (прихована ієрархія Concept / Model<T>)
+// ================================================================
+namespace type_erasure {
+    // «Інтерфейс» без базового класу: перевіряється під час компіляції (C++20)
+    template <typename T>
+    concept Report = requires(T& r) { r.generate(); };
+
+    class AnyReport {
+        struct Concept {                                   // прихований інтерфейс
+            virtual ~Concept() = default;
+            virtual void generate() = 0;
+        };
+        template <Report T>
+        struct Model final : Concept {                     // зв'язує будь-який T з інтерфейсом
+            T data;
+            explicit Model(T val) : data(std::move(val)) {}
+            void generate() override { data.generate(); }
+        };
+        std::unique_ptr<Concept> self;
+    public:
+        template <Report T>
+        AnyReport(T report) : self(std::make_unique<Model<T>>(std::move(report))) {}
+        void generate() { self->generate(); }
+    };
+} // namespace type_erasure
+
+// ================================================================
+// 7. std::function: стирається не об'єкт, а дія (одна операція)
+// ================================================================
+namespace std_function {
+    using Action = std::function<void()>;
+    template<typename T>
+    Action make_action(T t) { return [r = std::move(t)]() mutable { r.generate(); }; }
+} // namespace std_function
+
 // ================================================================
 // Вимірювання: RUNS прогонів по reps повторів, медіана
 // ================================================================
@@ -195,13 +236,23 @@ int main(int argc, char** argv) {
         for (auto& r : var_a) std::visit([](auto& rep) { rep.generate(); }, r);
     }, REPS_A);
 
+    std::vector<type_erasure::AnyReport> te_a;
+    te_a.emplace_back(plain::PdfReport{}); te_a.emplace_back(plain::HtmlReport{}); te_a.emplace_back(plain::CsvReport{});
+    double a_te = median_ms([&] { for (auto& r : te_a) r.generate(); }, REPS_A);
+
+    std::vector<std_function::Action> sf_a{
+        std_function::make_action(plain::PdfReport{}),
+        std_function::make_action(plain::HtmlReport{}),
+        std_function::make_action(plain::CsvReport{}) };
+    double a_sf = median_ms([&] { for (auto& f : sf_a) f(); }, REPS_A);
+
     // ------------------------------------------------------------
     // Сценарій B: склад визначається під час виконання — випадок variant.
     // Випадкові числа імітують вибір користувача (read_user_choice у тезах):
     // компілятор не знає наперед ні типів, ні порядку звітів,
     // тому не може прибрати диспетчеризацію.
     // Зерно (seed) робить цей «вибір» однаковим для всіх, хто запускає тест.
-    // Запуск: main [N] [seed]
+    // Запуск: benchmark [N] [seed]
     // ------------------------------------------------------------
     const int N = (argc > 1) ? std::stoi(argv[1]) : 3000;
     const unsigned seed = (argc > 2) ? static_cast<unsigned>(std::stoul(argv[2]))
@@ -215,26 +266,78 @@ int main(int argc, char** argv) {
 
     std::vector<std::unique_ptr<gof::IReport>> gof_b;
     std::vector<plain::ReportVariant> var_b;
-    gof_b.reserve(N); var_b.reserve(N);
+    std::vector<type_erasure::AnyReport> te_b;
+    std::vector<std_function::Action> sf_b;
+    gof_b.reserve(N); var_b.reserve(N); te_b.reserve(N); sf_b.reserve(N);
     for (int k : kinds) {
         switch (k) {
-        case 0: gof_b.push_back(std::make_unique<gof::PdfReport>());  var_b.emplace_back(plain::PdfReport{});  break;
-        case 1: gof_b.push_back(std::make_unique<gof::HtmlReport>()); var_b.emplace_back(plain::HtmlReport{}); break;
-        default: gof_b.push_back(std::make_unique<gof::CsvReport>()); var_b.emplace_back(plain::CsvReport{}); break;
+        case 0: gof_b.push_back(std::make_unique<gof::PdfReport>());  var_b.emplace_back(plain::PdfReport{});
+                te_b.emplace_back(plain::PdfReport{});  sf_b.push_back(std_function::make_action(plain::PdfReport{}));  break;
+        case 1: gof_b.push_back(std::make_unique<gof::HtmlReport>()); var_b.emplace_back(plain::HtmlReport{});
+                te_b.emplace_back(plain::HtmlReport{}); sf_b.push_back(std_function::make_action(plain::HtmlReport{})); break;
+        default: gof_b.push_back(std::make_unique<gof::CsvReport>()); var_b.emplace_back(plain::CsvReport{});
+                te_b.emplace_back(plain::CsvReport{});  sf_b.push_back(std_function::make_action(plain::CsvReport{}));  break;
         }
     }
     double b_gof = median_ms([&] { for (auto& r : gof_b) r->generate(); }, REPS_B);
     double b_var = median_ms([&] {
         for (auto& r : var_b) std::visit([](auto& rep) { rep.generate(); }, r);
     }, REPS_B);
+    double b_te = median_ms([&] { for (auto& r : te_b) r.generate(); }, REPS_B);
+    double b_sf = median_ms([&] { for (auto& f : sf_b) f(); }, REPS_B);
+
+    // ------------------------------------------------------------
+    // Сценарій B, окремо: побудова колекції (виділення пам'яті).
+    // У вимірювання обходу вище вона НЕ входить: колекції будуються заздалегідь.
+    // Тут — час побудови й знищення колекції з N звітів, у мікросекундах.
+    // ------------------------------------------------------------
+    const int REPS_BUILD = 200;
+    auto build_us = [&](auto make_one) {
+        return 1000.0 * median_ms([&] {
+            auto v = make_one();                       // побудова
+            sink += static_cast<long long>(v.size());  // знищення — при виході з лямбди
+        }, REPS_BUILD) / REPS_BUILD;
+    };
+    double c_gof = build_us([&] {
+        std::vector<std::unique_ptr<gof::IReport>> v; v.reserve(N);
+        for (int k : kinds) {
+            if (k == 0) v.push_back(std::make_unique<gof::PdfReport>());
+            else if (k == 1) v.push_back(std::make_unique<gof::HtmlReport>());
+            else v.push_back(std::make_unique<gof::CsvReport>());
+        }
+        return v; });
+    double c_var = build_us([&] {
+        std::vector<plain::ReportVariant> v; v.reserve(N);
+        for (int k : kinds) {
+            if (k == 0) v.emplace_back(plain::PdfReport{});
+            else if (k == 1) v.emplace_back(plain::HtmlReport{});
+            else v.emplace_back(plain::CsvReport{});
+        }
+        return v; });
+    double c_te = build_us([&] {
+        std::vector<type_erasure::AnyReport> v; v.reserve(N);
+        for (int k : kinds) {
+            if (k == 0) v.emplace_back(plain::PdfReport{});
+            else if (k == 1) v.emplace_back(plain::HtmlReport{});
+            else v.emplace_back(plain::CsvReport{});
+        }
+        return v; });
+    double c_sf = build_us([&] {
+        std::vector<std_function::Action> v; v.reserve(N);
+        for (int k : kinds) {
+            if (k == 0) v.push_back(std_function::make_action(plain::PdfReport{}));
+            else if (k == 1) v.push_back(std_function::make_action(plain::HtmlReport{}));
+            else v.push_back(std_function::make_action(plain::CsvReport{}));
+        }
+        return v; });
 
     // ------------------------------------------------------------
     // Результати: і в консоль, і у файл
     // ------------------------------------------------------------
     auto print_results = [&](std::ostream& out) {
         char buf[96];
-        auto row = [&](const char* label, double ms) {
-            std::snprintf(buf, sizeof(buf), "%-34s %8.2f ms\n", label, ms);
+        auto row = [&](const char* label, double v, const char* unit = "ms") {
+            std::snprintf(buf, sizeof(buf), "%-36s %8.2f %s\n", label, v, unit);
             out << buf;
         };
         out << "\n=== TAAPSD 2026: dispatch benchmark ===\n";
@@ -247,12 +350,23 @@ int main(int argc, char** argv) {
         row("3. Deducing this (C++23)", a_ded);
         row("4. tuple + fold", a_tuple);
         row("5. variant + visit", a_var);
+        row("6. type erasure (AnyReport)", a_te);
+        row("7. std::function (action)", a_sf);
 
         out << "\nScenario B: composition determined at runtime (N=" << N
             << " random reports x " << REPS_B << " reps, seed=" << seed << ")\n";
         row("1. GoF (virtual dispatch)", b_gof);
         out << "2-4. CRTP / deducing this / tuple   not expressible\n";
         row("5. variant + visit", b_var);
+        row("6. type erasure (AnyReport)", b_te);
+        row("7. std::function (action)", b_sf);
+
+        out << "\nScenario B, building the collection once (N=" << N
+            << " reports: allocation + destruction, not included above), microseconds\n";
+        row("1. GoF (unique_ptr per object)", c_gof, "us");
+        row("5. variant (inline, no allocation)", c_var, "us");
+        row("6. type erasure (heap per object)", c_te, "us");
+        row("7. std::function (small buffer)", c_sf, "us");
 
         out << "\n(sink=" << sink << ")\n";
     };

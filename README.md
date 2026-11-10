@@ -13,7 +13,8 @@ Source code accompanying two works by V. Boublik (National University of Kyiv-Mo
 |---|---|
 | `CRTP.cpp` | GoF patterns implemented via virtual functions, CRTP and deducing this (C++23) |
 | `static_reports.cpp` | tuple + fold vs variant + visit: the example from the TAAPSD theses |
-| `benchmark.cpp` | Dispatch benchmark: five approaches, compile-time and runtime composition |
+| `benchmark.cpp` | Dispatch benchmark: seven approaches (incl. type erasure and `std::function`), compile-time and runtime composition |
+| `ep_demo/` | Expression Problem demo with separate compilation: which extensions need recompiling old code (virtual, variant, type erasure, tuple with external overloads). Run `build.bat` (Windows) or `bash build.sh` (Linux/Mac/Codespaces) |
 | [`BENCHMARK.md`](BENCHMARK.md) | Benchmark description, results and open questions |
 
 Requires C++23 (GCC 14+, Clang 18+ or MSVC 19.32+).
@@ -26,4 +27,3 @@ are very welcome: please use **Discussions** or open an **Issue**.
 ## License
 
 MIT
-| `ep_demo/` | Expression Problem demo: separate compilation shows which extensions need recompiling old code (virtual vs variant) |

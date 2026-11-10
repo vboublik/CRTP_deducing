@@ -21,3 +21,14 @@ echo
 echo "--- (б) те саме, але зі ПЕРЕКОМПІЛЬОВАНИМ старим кодом:"
 g++ -std=c++20 -DWITH_XML -c 2_variant/old/reports.cpp -o 2_variant/old/reports_xml.o
 g++ -std=c++20 2_variant/new/new_type.cpp 2_variant/old/reports_xml.o -o variant_new_type && ./variant_new_type
+
+echo
+echo "=== 3. TYPE ERASURE: старий код компілюємо ОДИН раз ==="
+g++ -std=c++20 -c 3_type_erasure/old/reports.cpp -o 3_type_erasure/old/reports.o
+echo "--- новий тип (AnyReport і std::function) + готовий reports.o:"
+g++ -std=c++20 3_type_erasure/new/main.cpp 3_type_erasure/old/reports.o -o erasure_new_type && ./erasure_new_type
+
+echo
+echo "=== 4. TUPLE + зовнішні перевантаження: новий тип і нова операція без зміни report.h ==="
+g++ -std=c++20 4_tuple_overloads/new/main.cpp -o tuple_overloads && ./tuple_overloads
+
