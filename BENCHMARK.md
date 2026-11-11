@@ -76,7 +76,7 @@ Building and destroying the scenario-B collection (not included above), µs:
 | GoF (virtual) | heap, `unique_ptr` | 3 virtual calls | 135.9 | 153.3 | 156.3 |
 | variant + visit | inline in the vector | 1 jump on the index | 3.4 | 4.6 | 2.7 |
 | type erasure (AnyReport) | heap, `Model<T>` | 1 virtual call | 110.6 | 152.5 | 141.5 |
-| std::function | small buffer, no heap | 1 indirect call | 21.0 | 33.1 | 17.5 |
+| std::function | small buffer (in the libraries used) | 1 indirect call | 21.0 | 33.1 | 17.5 |
 
 ### Hybrid processors: pin the run to one core
 
