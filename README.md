@@ -1,14 +1,16 @@
 # CRTP Design Patterns in Modern C++
 
 Source code accompanying the works by V. Boublik (National University of Kyiv-Mohyla Academy):
-
+  ## Publications
 - *Design Patterns: From CRTP to Deducing This in Modern C++*. Preprint, Zenodo, 2026.
   DOI: [10.5281/zenodo.21408968](https://doi.org/10.5281/zenodo.21408968)
 - *Design Patterns: On the Expressiveness Limits of CRTP-Based Tuple Infrastructures under
   Runtime Conditions*. Preprint, Zenodo, 2026 (extended version of the TAAPSD 2026 theses).
   DOI: [10.5281/zenodo.24118157](https://doi.org/10.5281/zenodo.24118157)
-- *On the Expressiveness Limits of CRTP-Based Tuple Infrastructures under Runtime Conditions*.
-  Theses, TAAPSD 2026.
+- Boublik V. V., Zymovets R. O. *Lambda meta-expressions in modern C++*. Preprint, Zenodo, 2026.
+  [doi:10.5281/zenodo.21325708](https://doi.org/10.5281/zenodo.21325708)
+- Boublik V. V., Zymovets R. O. *Functional metaprogramming with lambda meta-expressions in modern C++*. Preprint, Zenodo, 2026.
+  [doi:10.5281/zenodo.24444506](https://doi.org/10.5281/zenodo.24444506)
 
 ## Files
 
